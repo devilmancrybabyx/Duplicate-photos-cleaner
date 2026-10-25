@@ -4,12 +4,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Deep obsidian radial background -->
     <path
-        android:fillColor="#0D1117"
+        android:fillColor="#121820"
         android:pathData="M0,0h108v108h-108z" />
-    <!-- Subtle glow ring -->
-    <path
-        android:fillColor="#15261F"
-        android:pathData="M54,14 A40,40 0 1 0 54,94 A40,40 0 1 0 54,14 Z" />
 </vector>

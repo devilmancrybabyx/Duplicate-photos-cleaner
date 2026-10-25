@@ -4,75 +4,50 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    
-    <!-- Central Modern Dupe Cleaner Emblem -->
     <group
-        android:translateX="18"
-        android:translateY="18"
-        android:scaleX="0.67"
-        android:scaleY="0.67">
-
-        <!-- Back Duplicate Card (Rotated slightly left) -->
-        <group
-            android:pivotX="45"
-            android:pivotY="45"
-            android:rotation="-8">
-            <path
-                android:fillColor="#1B382B"
-                android:pathData="M24,14h50c4.4,0 8,3.6 8,8v56c0,4.4 -3.6,8 -8,8H24c-4.4,0 -8,-3.6 -8,-8V22c0,-4.4 3.6,-8 8,-8z" />
-            <path
-                android:fillColor="#2E5C46"
-                android:pathData="M28,24h42c2.2,0 4,1.8 4,4v26c0,2.2 -1.8,4 -4,4H28c-2.2,0 -4,-1.8 -4,-4V28c0,-2.2 1.8,-4 4,-4z" />
-        </group>
-
-        <!-- Front Main Media Card -->
-        <group
-            android:pivotX="50"
-            android:pivotY="50"
-            android:rotation="4">
-            <!-- Card Body with Shadow Border -->
-            <path
-                android:fillColor="#22C55E"
-                android:pathData="M34,22h50c4.4,0 8,3.6 8,8v56c0,4.4 -3.6,8 -8,8H34c-4.4,0 -8,-3.6 -8,-8V30c0,-4.4 3.6,-8 8,-8z" />
-            <!-- Inner Canvas Surface -->
-            <path
-                android:fillColor="#121820"
-                android:pathData="M38,28h42c2.2,0 4,1.8 4,4v44c0,2.2 -1.8,4 -4,4H38c-2.2,0 -4,-1.8 -4,-4V32c0,-2.2 1.8,-4 4,-4z" />
-            <!-- Landscape Mountain / Photo Wave -->
-            <path
-                android:fillColor="#10B981"
-                android:pathData="M40,68l11,-15 9,11 8,-9 12,13H40z" />
-            <!-- Sun / Lens Aperture -->
-            <path
-                android:fillColor="#34D399"
-                android:pathData="M50,42a5,5 0 1,0 10,0a5,5 0 1,0 -10,0" />
-            <!-- Video Play Indicator Overlay -->
-            <path
-                android:fillColor="#06B6D4"
-                android:pathData="M66,36l7,4.5 -7,4.5z" />
-        </group>
-
-        <!-- Dynamic Scanner Beam Line -->
+        android:scaleX="0.58"
+        android:scaleY="0.58"
+        android:translateX="22.68"
+        android:translateY="22.68">
+        
+        <!-- Back duplicate card outline (Emerald Dark) -->
         <path
-            android:fillColor="#38BDF8"
-            android:pathData="M20,53h70c1.1,0 2,0.9 2,2s-0.9,2 -2,2H20c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2z" />
-
-        <!-- Clean Sparkle 1 (Top Right) -->
+            android:fillColor="#1B4D3E"
+            android:pathData="M26,16h48c4.4,0 8,3.6 8,8v48c0,4.4 -3.6,8 -8,8H26c-4.4,0 -8,-3.6 -8,-8V24c0,-4.4 3.6,-8 8,-8z" />
+        
+        <!-- Front primary media card (Emerald Accent) -->
         <path
-            android:fillColor="#22D3EE"
-            android:pathData="M84,10c0,5 4,9 9,9c-5,0 -9,4 -9,9c0,-5 -4,-9 -9,-9c5,0 9,-4 9,-9z" />
-
-        <!-- Clean Sparkle 2 (Bottom Left) -->
+            android:fillColor="#22C55E"
+            android:pathData="M34,26h48c4.4,0 8,3.6 8,8v48c0,4.4 -3.6,8 -8,8H34c-4.4,0 -8,-3.6 -8,-8V34c0,-4.4 3.6,-8 8,-8z" />
+        
+        <!-- Inner image screen surface (Dark slate) -->
         <path
-            android:fillColor="#4ADE80"
-            android:pathData="M16,74c0,3.3 2.7,6 6,6c-3.3,0 -6,2.7 -6,6c0,-3.3 -2.7,-6 -6,-6c3.3,0 6,-2.7 6,-6z" />
-
-        <!-- Shield / Checkmark Badge -->
+            android:fillColor="#121820"
+            android:pathData="M38,32h40c2.2,0 4,1.8 4,4v40c0,2.2 -1.8,4 -4,4H38c-2.2,0 -4,-1.8 -4,-4V36c0,-2.2 1.8,-4 4,-4z" />
+        
+        <!-- Mountain peaks / photo landscape -->
         <path
-            android:fillColor="#059669"
-            android:pathData="M54,82c0,0 8,-3 14,-10V60l-14,-5 -14,5v12c6,7 14,10 14,10z" />
+            android:fillColor="#10B981"
+            android:pathData="M40,70l12,-16l10,12l8,-10l12,14H40z" />
+        
+        <!-- Sun disc -->
         <path
-            android:fillColor="#FFFFFF"
-            android:pathData="M52,73l-4,-4 1.4,-1.4 2.6,2.6 6.6,-6.6 1.4,1.4z" />
+            android:fillColor="#34D399"
+            android:pathData="M52,42c0,-3.3 2.7,-6 6,-6s6,2.7 6,6s-2.7,6 -6,6s-6,-2.7 -6,-6z" />
+        
+        <!-- Video play triangle (Cyan) -->
+        <path
+            android:fillColor="#06B6D4"
+            android:pathData="M66,48l10,6l-10,6V48z" />
+        
+        <!-- Sparkle Clean Badge (Cyan) -->
+        <path
+            android:fillColor="#00E5FF"
+            android:pathData="M24,24l3,7l7,3l-7,3l-3,7l-3,-7l-7,-3l7,-3z" />
+            
+        <!-- Small Star (Gold) -->
+        <path
+            android:fillColor="#FFD700"
+            android:pathData="M84,20l2,4l4,2l-4,2l-2,4l-2,-4l-4,-2l4,-2z" />
     </group>
 </vector>

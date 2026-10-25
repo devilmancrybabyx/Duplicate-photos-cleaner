@@ -23,6 +23,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -866,7 +867,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         .fillMaxWidth()
                         .padding(16.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .combinedClickable(onClick = { openGitHubProfile(context) })
+                        .clickable { openGitHubProfile(context) }
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),

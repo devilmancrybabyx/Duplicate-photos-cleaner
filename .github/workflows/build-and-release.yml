@@ -39,7 +39,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build APKs with Gradle
-        run: ./gradlew assembleRelease assembleDebug --stacktrace
+        run: ./gradlew assembleRelease assembleDebug --stacktrace --info
 
       - name: Prepare APK Artifacts for Release
         id: prepare_apks
