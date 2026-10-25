@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -115,6 +116,7 @@ data class UiState(
     val scanProgress: Float = 0f,
     val scannedCount: Int = 0,
     val totalCount: Int = 0,
+    val scanPhaseText: String = "Scanning...",
     val groups: List<SimilarGroup> = emptyList(),
     val globalSort: SortOption = SortOption.SIZE_DESC,
     val similarityThreshold: Int = 8, // Max Hamming distance
@@ -332,12 +334,21 @@ class DedupViewModel : ViewModel() {
         val contentResolver = context.contentResolver
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true, scanProgress = 0f, groups = emptyList()) }
+            _uiState.update {
+                it.copy(
+                    isScanning = true,
+                    scanProgress = 0f,
+                    scannedCount = 0,
+                    totalCount = 0,
+                    scanPhaseText = "Discovering photos & videos...",
+                    groups = emptyList()
+                )
+            }
 
             val rawMedia = withContext(Dispatchers.IO) {
                 val list = mutableListOf<PhotoItem>()
 
-                // 1. Query Images (JPEG, PNG, GIF, WEBP, HEIC, etc.)
+                // 1. Image projection & cursor
                 val imageProjection = arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DISPLAY_NAME,
@@ -349,13 +360,54 @@ class DedupViewModel : ViewModel() {
                 )
                 val imageOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
 
-                contentResolver.query(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    imageProjection,
-                    null,
-                    null,
-                    imageOrder
-                )?.use { cursor ->
+                // 2. Video projection & cursor
+                val videoProjection = arrayOf(
+                    MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.DATE_ADDED,
+                    MediaStore.Video.Media.SIZE,
+                    MediaStore.Video.Media.WIDTH,
+                    MediaStore.Video.Media.HEIGHT,
+                    MediaStore.Video.Media.DURATION,
+                    MediaStore.Video.Media.MIME_TYPE
+                )
+                val videoOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+
+                val imageCursor = try {
+                    contentResolver.query(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        imageProjection, null, null, imageOrder
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+
+                val videoCursor = try {
+                    contentResolver.query(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        videoProjection, null, null, videoOrder
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+
+                val totalImages = imageCursor?.count ?: 0
+                val totalVideos = videoCursor?.count ?: 0
+                val grandTotal = totalImages + totalVideos
+
+                _uiState.update {
+                    it.copy(
+                        totalCount = grandTotal,
+                        scannedCount = 0,
+                        scanProgress = 0f,
+                        scanPhaseText = "Reading gallery media..."
+                    )
+                }
+
+                var processed = 0
+
+                // Process Images
+                imageCursor?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
                     val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
@@ -389,31 +441,27 @@ class DedupViewModel : ViewModel() {
                                 list.add(PhotoItem(id, uri, name, date, size, w, h, dHash, isVideo = false, mimeType = mime))
                             }
                         } catch (e: Exception) {
-                            // Skip corrupted files
+                            // Fallback pseudo-hash based on dimensions & size if thumbnail cannot be generated
+                            val pseudoHash = (w.toLong() shl 32) xor (h.toLong() shl 16) xor size
+                            list.add(PhotoItem(id, uri, name, date, size, w, h, pseudoHash, isVideo = false, mimeType = mime))
+                        }
+
+                        processed++
+                        if (processed % 10 == 0 || processed == grandTotal) {
+                            val progressVal = if (grandTotal > 0) processed.toFloat() / grandTotal else 0f
+                            _uiState.update {
+                                it.copy(
+                                    scannedCount = processed,
+                                    scanProgress = progressVal,
+                                    scanPhaseText = "Analyzing photos ($processed / $grandTotal)..."
+                                )
+                            }
                         }
                     }
                 }
 
-                // 2. Query Videos (MP4, MKV, 3GP, MOV, etc.)
-                val videoProjection = arrayOf(
-                    MediaStore.Video.Media._ID,
-                    MediaStore.Video.Media.DISPLAY_NAME,
-                    MediaStore.Video.Media.DATE_ADDED,
-                    MediaStore.Video.Media.SIZE,
-                    MediaStore.Video.Media.WIDTH,
-                    MediaStore.Video.Media.HEIGHT,
-                    MediaStore.Video.Media.DURATION,
-                    MediaStore.Video.Media.MIME_TYPE
-                )
-                val videoOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
-
-                contentResolver.query(
-                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                    videoProjection,
-                    null,
-                    null,
-                    videoOrder
-                )?.use { cursor ->
+                // Process Videos (Fast duration & size fingerprinting to avoid heavy synchronous thumbnailing)
+                videoCursor?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
                     val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
@@ -434,27 +482,34 @@ class DedupViewModel : ViewModel() {
                         val mime = cursor.getString(mimeCol) ?: "video/*"
                         val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
 
-                        try {
-                            val thumb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                contentResolver.loadThumbnail(uri, Size(64, 64), null)
-                            } else {
-                                @Suppress("DEPRECATION")
-                                MediaStore.Video.Thumbnails.getThumbnail(
-                                    contentResolver, id, MediaStore.Video.Thumbnails.MINI_KIND, null
+                        // Compute video fingerprint from duration and size (avoids blocking slow video frame decoders)
+                        val videoHash = (duration shl 32) xor size
+                        list.add(
+                            PhotoItem(
+                                id = id,
+                                uri = uri,
+                                name = name,
+                                dateAdded = date,
+                                sizeBytes = size,
+                                width = w,
+                                height = h,
+                                dHash = videoHash,
+                                isVideo = true,
+                                durationMs = duration,
+                                mimeType = mime
+                            )
+                        )
+
+                        processed++
+                        if (processed % 5 == 0 || processed == grandTotal) {
+                            val progressVal = if (grandTotal > 0) processed.toFloat() / grandTotal else 0f
+                            _uiState.update {
+                                it.copy(
+                                    scannedCount = processed,
+                                    scanProgress = progressVal,
+                                    scanPhaseText = "Analyzing videos ($processed / $grandTotal)..."
                                 )
                             }
-                            if (thumb != null) {
-                                val dHash = PerceptualHasher.computeDHash(thumb)
-                                thumb.recycle()
-                                list.add(
-                                    PhotoItem(
-                                        id, uri, name, date, size, w, h, dHash,
-                                        isVideo = true, durationMs = duration, mimeType = mime
-                                    )
-                                )
-                            }
-                        } catch (e: Exception) {
-                            // Skip corrupted video files
                         }
                     }
                 }
@@ -462,8 +517,13 @@ class DedupViewModel : ViewModel() {
                 list
             }
 
-            val totalMediaCount = rawMedia.size
-            _uiState.update { it.copy(totalCount = totalMediaCount) }
+            _uiState.update {
+                it.copy(
+                    scanProgress = 1f,
+                    scannedCount = rawMedia.size,
+                    scanPhaseText = "Matching duplicates & clustering..."
+                )
+            }
 
             // Cluster into Duplicate & Similar Groups
             val clusteredGroups = withContext(Dispatchers.Default) {
@@ -488,16 +548,20 @@ class DedupViewModel : ViewModel() {
                         // Separate photos and videos
                         if (base.isVideo != candidate.isVideo) continue
 
-                        // Check aspect ratio to avoid false positive matches between portrait and landscape
+                        // Check aspect ratio for photos
                         if (!base.isVideo) {
                             val candRatio = if (candidate.height > 0) candidate.width.toFloat() / candidate.height else 1f
                             if (abs(baseRatio - candRatio) > 0.35f) continue
                         } else {
-                            // For videos, duration must be within 2 seconds
-                            if (abs(base.durationMs - candidate.durationMs) > 2000L) continue
+                            // For videos, duration must be within 1 second
+                            if (abs(base.durationMs - candidate.durationMs) > 1000L) continue
                         }
 
-                        val dist = PerceptualHasher.hammingDistance(base.dHash, candidate.dHash)
+                        val dist = if (!base.isVideo) {
+                            PerceptualHasher.hammingDistance(base.dHash, candidate.dHash)
+                        } else {
+                            if (base.durationMs == candidate.durationMs && base.sizeBytes == candidate.sizeBytes) 0 else 20
+                        }
 
                         // Similar or exact match check
                         if (dist <= threshold) {
@@ -537,15 +601,6 @@ class DedupViewModel : ViewModel() {
                                 sortOption = _uiState.value.globalSort
                             )
                         )
-                    }
-
-                    if (i % 15 == 0 || i == rawMedia.size - 1) {
-                        _uiState.update {
-                            it.copy(
-                                scannedCount = i + 1,
-                                scanProgress = if (totalMediaCount > 0) (i + 1).toFloat() / totalMediaCount else 1f
-                            )
-                        }
                     }
                 }
                 resultGroups
@@ -859,7 +914,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))
 
-                // Contact Section with GitHub Icon
+                // Contact Section with Official GitHub Logo
                 Surface(
                     color = Color(0xFF252525),
                     shape = RoundedCornerShape(12.dp),
@@ -875,17 +930,22 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
-                                .background(Color.Black),
+                                .background(Color(0xFF161B22)),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Code, contentDescription = "GitHub", tint = Color.White)
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_github),
+                                contentDescription = "GitHub",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text("devilmancrybabyx", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
-                            Text("Tap to visit GitHub", fontSize = 11.sp, color = Color(0xFF03DAC6))
+                            Text("View GitHub Profile", fontSize = 11.sp, color = Color(0xFF03DAC6))
                         }
                     }
                 }
@@ -912,11 +972,6 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         }
                     },
                     actions = {
-                        // GitHub Contact Icon in Top Bar
-                        IconButton(onClick = { openGitHubProfile(context) }) {
-                            Icon(Icons.Default.Code, contentDescription = "GitHub Profile", tint = Color(0xFF03DAC6))
-                        }
-
                         // Global Sort Menu
                         var sortMenuExpanded by remember { mutableStateOf(false) }
                         IconButton(onClick = { sortMenuExpanded = true }) {
@@ -1018,7 +1073,8 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         ScanningAnimationView(
                             progress = state.scanProgress,
                             scanned = state.scannedCount,
-                            total = state.totalCount
+                            total = state.totalCount,
+                            phaseText = state.scanPhaseText
                         )
                     }
                     state.groups.isEmpty() -> {
@@ -1052,7 +1108,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                             )
                             Spacer(Modifier.height(10.dp))
                             Text(
-                                "Scans all pictures, videos & GIFs with deep perceptual gradient hashing (dHash) and cryptographic SHA-256 for maximum precision.",
+                                "Scans all pictures, videos & GIFs with perceptual difference hashing (dHash) and cryptographic SHA-256 for maximum precision.",
                                 color = Color.Gray,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center
@@ -1134,7 +1190,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
 // --- BEAUTIFUL SCANNING ANIMATION ---
 
 @Composable
-fun ScanningAnimationView(progress: Float, scanned: Int, total: Int) {
+fun ScanningAnimationView(progress: Float, scanned: Int, total: Int, phaseText: String) {
     val infiniteTransition = rememberInfiniteTransition(label = "scan")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 0.88f,
@@ -1202,10 +1258,11 @@ fun ScanningAnimationView(progress: Float, scanned: Int, total: Int) {
 
         Spacer(Modifier.height(24.dp))
         Text(
-            "Analyzing Photos, Videos & GIFs...",
+            phaseText,
             fontSize = 17.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White
+            color = Color.White,
+            textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(10.dp))
         LinearProgressIndicator(
@@ -1216,7 +1273,8 @@ fun ScanningAnimationView(progress: Float, scanned: Int, total: Int) {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "$scanned of $total items processed (${(progress * 100).toInt()}%)",
+            if (total > 0) "$scanned of $total items processed (${(progress * 100).toInt()}%)"
+            else "Preparing media scan...",
             fontSize = 13.sp,
             color = Color.LightGray
         )

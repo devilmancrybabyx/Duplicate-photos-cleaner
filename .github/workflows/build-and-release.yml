@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.1.0)'
+        description: 'Release Tag (e.g. v1.1.1)'
         required: false
-        default: 'v1.1.0'
+        default: 'v1.1.1'
 
 permissions:
   contents: write
@@ -48,14 +48,14 @@ jobs:
           
           # Find and copy release APK
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk release_artifacts/DupeCleaner-v1.1.0-release.apk
+            cp app/build/outputs/apk/release/app-release.apk release_artifacts/DupeCleaner-v1.1.1-release.apk
           elif [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
-            cp app/build/outputs/apk/release/app-release-unsigned.apk release_artifacts/DupeCleaner-v1.1.0-release.apk
+            cp app/build/outputs/apk/release/app-release-unsigned.apk release_artifacts/DupeCleaner-v1.1.1-release.apk
           fi
 
           # Find and copy debug APK
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk release_artifacts/DupeCleaner-v1.1.0-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk release_artifacts/DupeCleaner-v1.1.1-debug.apk
           fi
 
           ls -la release_artifacts/
@@ -74,7 +74,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG="${{ github.event.inputs.tag_name }}"
           else
-            TAG="v1.1.0"
+            TAG="v1.1.1"
           fi
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -86,17 +86,15 @@ jobs:
           body: |
             ## 📸 Dupe cleaner ${{ steps.release_tag.outputs.TAG }}
 
-            ### ✨ What's New in v1.1.0:
-            - **Scan Videos, GIFs & All Picture Formats**: Extended scanner to support MP4, MKV, 3GP, MOV, GIF, WEBP, HEIC, PNG, and JPEG with hardware thumbnail extraction and Coil video frame decoders.
-            - **Share Media Directly**: Long-press any photo or video to view full-screen and tap the new **Share** button.
-            - **Persistent Scan Memory**: Automatically remembers and caches your scan results across app restarts, with a "Clear Scan Memory Cache" option.
-            - **Refined Material 3 UI**: Centered UI elements, beautiful radar scanning pulse animation, hamburger navigation drawer, and developer contact button.
-            - **Icon-Only Group Controls**: Clean, compact icon buttons for Keep 1st Only, Delete All, and Keep All.
-            - **Enhanced Accuracy**: Aspect ratio filtering and duration matching to eliminate false positives.
+            ### 🚀 Fixes & Improvements in v1.1.1:
+            - **Fixed Scanning Freeze / Stuck at 0%**: Immediate cursor discovery of total item count, live real-time progress updates during scanning, and non-blocking video fingerprinting.
+            - **Top Bar Cleanup**: Removed `<>` code button from top bar for a cleaner, centered interface.
+            - **Official GitHub Logo**: Added the authentic GitHub Octocat vector logo to the developer card inside the hamburger drawer.
+            - **Hardware-accelerated Smooth Scanning**: Real-time phase reporting ("Reading gallery media...", "Analyzing photos...", "Matching duplicates...").
 
             ### 📦 Download Assets:
-            - `DupeCleaner-v1.1.0-release.apk`: Signed release build ready to install.
-            - `DupeCleaner-v1.1.0-debug.apk`: Debug build with developer inspection tools.
+            - `DupeCleaner-v1.1.1-release.apk`: Signed release build ready to install.
+            - `DupeCleaner-v1.1.1-debug.apk`: Debug build with developer inspection tools.
           files: release_artifacts/*.apk
           draft: false
           prerelease: false
