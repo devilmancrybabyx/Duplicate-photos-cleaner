@@ -139,8 +139,6 @@ data class UiState(
     val activeModalInitialIndex: Int = 0,
     val isCacheLoaded: Boolean = false,
     val isDarkMode: Boolean = true,
-    val availableFolders: List<String> = emptyList(),
-    val selectedFolder: String? = null,
     val availableUpdate: AppUpdateInfo? = null,
     val isCheckingUpdate: Boolean = false,
     val deleteSuccessMessage: String? = null
@@ -159,9 +157,6 @@ object ScanCacheManager {
             root.put("totalCount", state.totalCount)
             root.put("globalSort", state.globalSort.name)
             root.put("isDarkMode", state.isDarkMode)
-            if (state.selectedFolder != null) {
-                root.put("selectedFolder", state.selectedFolder)
-            }
 
             val groupsArray = JSONArray()
             state.groups.forEach { group ->
@@ -268,17 +263,6 @@ object ScanCacheManager {
         }
     }
 
-    fun getSavedFolder(context: Context): String? {
-        val file = File(context.filesDir, FILE_NAME)
-        if (!file.exists()) return null
-        return try {
-            val root = JSONObject(file.readText())
-            if (root.has("selectedFolder")) root.optString("selectedFolder") else null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     fun clear(context: Context) {
         try {
             File(context.filesDir, FILE_NAME).delete()
@@ -355,9 +339,7 @@ class DedupViewModel : ViewModel() {
 
     fun loadCacheIfAvailable(context: Context) {
         val savedDark = ScanCacheManager.isDark(context)
-        val savedFolder = ScanCacheManager.getSavedFolder(context)
-        _uiState.update { it.copy(isDarkMode = savedDark, selectedFolder = savedFolder) }
-        loadFolders(context)
+        _uiState.update { it.copy(isDarkMode = savedDark) }
         checkForUpdates(context, showToastIfLatest = false)
 
         if (_uiState.value.isCacheLoaded || _uiState.value.groups.isNotEmpty()) return
@@ -375,44 +357,6 @@ class DedupViewModel : ViewModel() {
                 }
             }
         }
-    }
-
-    fun loadFolders(context: Context) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val folders = linkedSetOf<String>()
-            val cr = context.contentResolver
-            val projection = arrayOf(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-            try {
-                cr.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, null, null, null)?.use { cursor ->
-                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-                    if (idx >= 0) {
-                        while (cursor.moveToNext()) {
-                            val f = cursor.getString(idx)
-                            if (!f.isNullOrBlank()) folders.add(f)
-                        }
-                    }
-                }
-            } catch (e: Exception) { /* ignore */ }
-            try {
-                cr.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null, null, null)?.use { cursor ->
-                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-                    if (idx >= 0) {
-                        while (cursor.moveToNext()) {
-                            val f = cursor.getString(idx)
-                            if (!f.isNullOrBlank()) folders.add(f)
-                        }
-                    }
-                }
-            } catch (e: Exception) { /* ignore */ }
-            val sorted = folders.sorted()
-            _uiState.update { it.copy(availableFolders = sorted) }
-        }
-    }
-
-    fun setSelectedFolder(context: Context, folder: String?) {
-        _uiState.update { it.copy(selectedFolder = folder) }
-        ScanCacheManager.save(context, _uiState.value)
-        scanDevicePhotos(context, folder)
     }
 
     fun toggleTheme(context: Context) {
@@ -465,7 +409,7 @@ class DedupViewModel : ViewModel() {
                         }
                     }
 
-                    val currentTag = "v1.1.3"
+                    val currentTag = "v1.1.4"
                     if (tagName != currentTag && downloadUrl != null) {
                         _uiState.update {
                             it.copy(
@@ -497,7 +441,7 @@ class DedupViewModel : ViewModel() {
         }
     }
 
-    fun scanDevicePhotos(context: Context, folder: String? = _uiState.value.selectedFolder) {
+    fun scanDevicePhotos(context: Context) {
         if (_uiState.value.isScanning) return
         val contentResolver = context.contentResolver
 
@@ -508,8 +452,7 @@ class DedupViewModel : ViewModel() {
                     scanProgress = 0f,
                     scannedCount = 0,
                     totalCount = 0,
-                    selectedFolder = folder,
-                    scanPhaseText = if (folder != null) "Scanning folder: $folder..." else "Discovering photos & videos...",
+                    scanPhaseText = "Discovering photos & videos...",
                     groups = emptyList()
                 )
             }
@@ -546,15 +489,10 @@ class DedupViewModel : ViewModel() {
                 )
                 val videoOrder = "${MediaStore.Video.Media.DATE_TAKEN} DESC, ${MediaStore.Video.Media.DATE_MODIFIED} DESC, ${MediaStore.Video.Media.DATE_ADDED} DESC"
 
-                val imageSelection = if (folder != null) "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?" else null
-                val imageSelectionArgs = if (folder != null) arrayOf(folder) else null
-                val videoSelection = if (folder != null) "${MediaStore.Video.Media.BUCKET_DISPLAY_NAME} = ?" else null
-                val videoSelectionArgs = if (folder != null) arrayOf(folder) else null
-
                 val imageCursor = try {
                     contentResolver.query(
                         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        imageProjection, imageSelection, imageSelectionArgs, imageOrder
+                        imageProjection, null, null, imageOrder
                     )
                 } catch (e: Exception) {
                     null
@@ -563,7 +501,7 @@ class DedupViewModel : ViewModel() {
                 val videoCursor = try {
                     contentResolver.query(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        videoProjection, videoSelection, videoSelectionArgs, videoOrder
+                        videoProjection, null, null, videoOrder
                     )
                 } catch (e: Exception) {
                     null
@@ -1134,7 +1072,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    Text("Version 1.1.3", fontSize = 12.sp, color = Color.Gray)
+                    Text("Version 1.1.4", fontSize = 12.sp, color = Color.Gray)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))
@@ -1143,7 +1081,6 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                 Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                     Text("Scan Statistics", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF03DAC6))
                     Spacer(Modifier.height(8.dp))
-                    Text("Folder: ${state.selectedFolder ?: "All Media"}", fontSize = 13.sp, color = Color.LightGray)
                     Text("Groups detected: ${state.groups.size}", fontSize = 13.sp, color = Color.LightGray)
                     Text(
                         "Recoverable storage: ${formatFileSize(markedPhotos.sumOf { it.sizeBytes })}",
@@ -1260,13 +1197,11 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
             topBar = {
                 CenterAlignedTopAppBar(
                     title = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Dupe cleaner", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        if (state.groups.isNotEmpty()) {
                             Text(
-                                if (state.groups.isNotEmpty()) "${state.groups.size} groups • ${markedPhotos.size} to delete"
-                                else "Smart Media Cleaner",
-                                fontSize = 11.sp,
-                                color = Color.LightGray
+                                "${state.groups.size} groups • ${markedPhotos.size} to delete",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
                     },
@@ -1283,39 +1218,6 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                                 contentDescription = "Toggle Light/Dark Mode",
                                 tint = if (state.isDarkMode) Color(0xFFFFB300) else Color(0xFF1976D2)
                             )
-                        }
-
-                        // Per-Folder Scan Option Dropdown (Requirement 3)
-                        var folderMenuExpanded by remember { mutableStateOf(false) }
-                        IconButton(onClick = { folderMenuExpanded = true }) {
-                            Icon(Icons.Default.Folder, contentDescription = "Scan by Folder")
-                        }
-                        DropdownMenu(
-                            expanded = folderMenuExpanded,
-                            onDismissRequest = { folderMenuExpanded = false }
-                        ) {
-                            Text(
-                                "Scan Specific Folder",
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                fontSize = 12.sp,
-                                color = Color.Gray
-                            )
-                            DropdownMenuItem(
-                                text = { Text("📁 All Media Folders") },
-                                onClick = {
-                                    viewModel.setSelectedFolder(context, null)
-                                    folderMenuExpanded = false
-                                }
-                            )
-                            state.availableFolders.forEach { folderName ->
-                                DropdownMenuItem(
-                                    text = { Text("📁 $folderName") },
-                                    onClick = {
-                                        viewModel.setSelectedFolder(context, folderName)
-                                        folderMenuExpanded = false
-                                    }
-                                )
-                            }
                         }
 
                         // Global Sort Menu
@@ -1471,56 +1373,23 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         }
                     }
                     else -> {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            // Active Folder Chip
-                            if (state.selectedFolder != null) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.primaryContainer,
-                                        shape = RoundedCornerShape(16.dp),
-                                        modifier = Modifier.clickable { viewModel.setSelectedFolder(context, null) }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                "Folder: ${state.selectedFolder}",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                            Spacer(Modifier.width(4.dp))
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = "Show All Folders",
-                                                modifier = Modifier.size(14.dp),
-                                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            LazyColumn(
-                                contentPadding = PaddingValues(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                items(state.groups, key = { it.id }) { group ->
-                                    Box(modifier = Modifier.animateItem()) {
-                                        SimilarGroupCard(
-                                            group = group,
-                                            onTogglePhoto = { photoId -> viewModel.togglePhotoStatus(context, group.id, photoId) },
-                                            onHoldPhoto = { index -> viewModel.openFullScreen(group, index) },
-                                            onSortChange = { sortOpt -> viewModel.sortGroup(context, group.id, sortOpt) },
-                                            onSelectAllGroup = { markRed, keepBest ->
-                                                viewModel.setGroupSelection(context, group.id, markRed, keepBest)
-                                            },
-                                            onHideGroup = { viewModel.hideGroup(context, group.id) }
-                                        )
-                                    }
+                        LazyColumn(
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(state.groups, key = { it.id }) { group ->
+                                Box(modifier = Modifier.animateItem()) {
+                                    SimilarGroupCard(
+                                        group = group,
+                                        onTogglePhoto = { photoId -> viewModel.togglePhotoStatus(context, group.id, photoId) },
+                                        onHoldPhoto = { index -> viewModel.openFullScreen(group, index) },
+                                        onSortChange = { sortOpt -> viewModel.sortGroup(context, group.id, sortOpt) },
+                                        onSelectAllGroup = { markRed, keepBest ->
+                                            viewModel.setGroupSelection(context, group.id, markRed, keepBest)
+                                        },
+                                        onHideGroup = { viewModel.hideGroup(context, group.id) }
+                                    )
                                 }
                             }
                         }

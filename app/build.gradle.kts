@@ -12,10 +12,20 @@ android {
         applicationId = "com.example.photodedup"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.1.3"
+        versionCode = 6
+        versionName = "1.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            // shortcut: committing keystore to public repo for open-source self-signing, upgrade to GitHub Actions Secrets if private signing key needed
+            storeFile = file("keystore.jks")
+            storePassword = "dupecleaner123"
+            keyAlias = "dupecleaner"
+            keyPassword = "dupecleaner123"
+        }
     }
 
     buildTypes {
@@ -25,7 +35,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
