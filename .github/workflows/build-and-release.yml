@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.1.4)'
+        description: 'Release Tag (e.g. v1.1.5)'
         required: false
-        default: 'v1.1.4'
+        default: 'v1.1.5'
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG="${{ github.event.inputs.tag_name }}"
           else
-            TAG="v1.1.4"
+            TAG="v1.1.5"
           fi
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -59,16 +59,19 @@ jobs:
           TAG="${{ steps.release_tag.outputs.TAG }}"
           mkdir -p release_artifacts
           
-          # Find and copy release APK
+          # Find and copy release APK (versioned + permanent 'latest' alias)
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             cp app/build/outputs/apk/release/app-release.apk release_artifacts/DupeCleaner-${TAG}-release.apk
+            cp app/build/outputs/apk/release/app-release.apk release_artifacts/DupeCleaner-release.apk
           elif [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
             cp app/build/outputs/apk/release/app-release-unsigned.apk release_artifacts/DupeCleaner-${TAG}-release.apk
+            cp app/build/outputs/apk/release/app-release-unsigned.apk release_artifacts/DupeCleaner-release.apk
           fi
 
-          # Find and copy debug APK
+          # Find and copy debug APK (versioned + permanent 'latest' alias)
           if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk release_artifacts/DupeCleaner-${TAG}-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk release_artifacts/DupeCleaner-debug.apk
           fi
 
           ls -la release_artifacts/
@@ -87,18 +90,17 @@ jobs:
           body: |
             ## 📸 Dupe cleaner ${{ steps.release_tag.outputs.TAG }}
 
-            ### 🚀 What's New in v1.1.4:
-            - **🔑 Consistent Release Keystore & App Signature**: Integrated a permanent signing keystore so updates install seamlessly over existing installations without needing to uninstall first.
-            - **🎨 Brand New App Icon & Logo**: Updated to the requested custom high-res logo across all launcher mipmaps, drawables, and GitHub README.
-            - **🧹 Clean Minimal Top Bar**: Removed the "Dupe cleaner" app name header on the top bar for a cleaner, modern layout focused on scan results and actions.
-            - **⚡ Streamlined Full-Device Engine**: Removed folder scanning in favor of fast, reliable system-wide duplicate & similarity detection.
-            - **🎬 In-App Video Player & Fullscreen Mode**: Watch and compare duplicate videos directly with hardware-accelerated playback.
-            - **👁️ 1-Click Hide Text / Clean View**: Tap anywhere in full photo/video mode to inspect pictures unobstructed.
-            - **🌗 Dark & Light Theme**: Toggle between AMOLED dark mode and crisp light mode.
-            - **🔄 In-App APK Updates**: Download and install latest APK releases directly inside the app.
+            ### 🚀 What's New in v1.1.5:
+            - **⚡ Direct Permanent Latest Download**: Added permanent `DupeCleaner-release.apk` asset download endpoint so the README big download button always downloads the latest release APK directly.
+            - **🔑 Consistent Release Keystore & Signature**: Permanent keystore integration guarantees all updates install smoothly over existing installations.
+            - **🎨 Brand New App Icon & Logo**: High-resolution icons and splash branding across all Android densities.
+            - **🧹 Minimalist Top Bar**: Cleaned up the app header to showcase scan counts and status.
+            - **🎬 Video Player & Clean Photo View**: Hardware-accelerated video playback and 1-click unobstructed viewing.
+            - **🌗 Dark / Light Mode & In-App Updates**: Full theme switcher and automatic update alerts.
 
             ### 📦 Download Assets:
-            - `DupeCleaner-${{ steps.release_tag.outputs.TAG }}-release.apk`: Signed release build ready to install.
+            - `DupeCleaner-release.apk`: **Direct permanent download link** (always fetches the latest release APK).
+            - `DupeCleaner-${{ steps.release_tag.outputs.TAG }}-release.apk`: Versioned signed release build.
             - `DupeCleaner-${{ steps.release_tag.outputs.TAG }}-debug.apk`: Debug build with developer inspection tools.
           files: release_artifacts/*.apk
           draft: false

@@ -409,7 +409,7 @@ class DedupViewModel : ViewModel() {
                         }
                     }
 
-                    val currentTag = "v1.1.4"
+                    val currentTag = "v1.1.5"
                     if (tagName != currentTag && downloadUrl != null) {
                         _uiState.update {
                             it.copy(
@@ -1072,7 +1072,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    Text("Version 1.1.4", fontSize = 12.sp, color = Color.Gray)
+                    Text("Version 1.1.5", fontSize = 12.sp, color = Color.Gray)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))

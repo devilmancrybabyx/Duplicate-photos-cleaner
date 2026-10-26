@@ -12,6 +12,13 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Author](https://img.shields.io/badge/Developer-devilmancrybabyx-03DAC6.svg?logo=github)](https://github.com/devilmancrybabyx)
 
+<br />
+<br />
+
+<a href="https://github.com/devilmancrybabyx/Duplicate-photos-cleaner/releases/latest/download/DupeCleaner-release.apk">
+  <img src="art/download-button.png" width="340" alt="Download Latest APK" />
+</a>
+
 </div>
 
 ---
@@ -52,10 +59,11 @@
 
 ## 📦 Releases & Installation
 
-Download the latest APK directly from the [GitHub Releases](https://github.com/devilmancrybabyx/Duplicate-photos-cleaner/releases) page:
-1. Download **`DupeCleaner-v1.1.4-release.apk`** (or the latest release APK from the Releases tab).
-2. Tap the downloaded file to install on your Android device.
-3. Grant media permissions and tap **Start Smart Media Scan**.
+Download the latest APK directly:
+1. Tap the **[Download Latest APK](https://github.com/devilmancrybabyx/Duplicate-photos-cleaner/releases/latest/download/DupeCleaner-release.apk)** button (always downloads the newest release APK).
+2. Or browse all releases, change logs, and debug builds on the [GitHub Releases](https://github.com/devilmancrybabyx/Duplicate-photos-cleaner/releases) page.
+3. Tap the downloaded APK on your device to install or update without uninstalling.
+4. Grant media permissions and tap **Start Smart Media Scan**.
 
 ---
 
