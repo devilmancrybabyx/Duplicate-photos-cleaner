@@ -91,7 +91,7 @@ data class PhotoItem(
     val id: Long,
     val uri: Uri,
     val name: String,
-    val dateAdded: Long, // Epoch seconds
+    val dateAdded: Long, // Epoch milliseconds (DATE_TAKEN fallback to DATE_MODIFIED/DATE_ADDED)
     val sizeBytes: Long,
     val width: Int,
     val height: Int,
@@ -203,7 +203,9 @@ object ScanCacheManager {
                     val pId = pObj.getLong("id")
                     val uri = Uri.parse(pObj.getString("uri"))
                     val name = pObj.getString("name")
-                    val dateAdded = pObj.getLong("dateAdded")
+                    val rawDate = pObj.getLong("dateAdded")
+                    // shortcut: timestamps < 10B are seconds from previous versions, upgrade to millis
+                    val dateAdded = if (rawDate in 1 until 10_000_000_000L) rawDate * 1000L else rawDate
                     val sizeBytes = pObj.getLong("sizeBytes")
                     val width = pObj.getInt("width")
                     val height = pObj.getInt("height")
@@ -310,9 +312,10 @@ class DedupViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             val cached = ScanCacheManager.load(context)
             if (cached != null) {
+                val sortedGroups = sortGroupsList(cached.first, _uiState.value.globalSort)
                 _uiState.update {
                     it.copy(
-                        groups = cached.first,
+                        groups = sortedGroups,
                         scannedCount = cached.second,
                         totalCount = cached.third,
                         isCacheLoaded = true
@@ -352,18 +355,22 @@ class DedupViewModel : ViewModel() {
                 val imageProjection = arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.DATE_TAKEN,
+                    MediaStore.Images.Media.DATE_MODIFIED,
                     MediaStore.Images.Media.DATE_ADDED,
                     MediaStore.Images.Media.SIZE,
                     MediaStore.Images.Media.WIDTH,
                     MediaStore.Images.Media.HEIGHT,
                     MediaStore.Images.Media.MIME_TYPE
                 )
-                val imageOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+                val imageOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC, ${MediaStore.Images.Media.DATE_MODIFIED} DESC, ${MediaStore.Images.Media.DATE_ADDED} DESC"
 
                 // 2. Video projection & cursor
                 val videoProjection = arrayOf(
                     MediaStore.Video.Media._ID,
                     MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.DATE_TAKEN,
+                    MediaStore.Video.Media.DATE_MODIFIED,
                     MediaStore.Video.Media.DATE_ADDED,
                     MediaStore.Video.Media.SIZE,
                     MediaStore.Video.Media.WIDTH,
@@ -371,7 +378,7 @@ class DedupViewModel : ViewModel() {
                     MediaStore.Video.Media.DURATION,
                     MediaStore.Video.Media.MIME_TYPE
                 )
-                val videoOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
+                val videoOrder = "${MediaStore.Video.Media.DATE_TAKEN} DESC, ${MediaStore.Video.Media.DATE_MODIFIED} DESC, ${MediaStore.Video.Media.DATE_ADDED} DESC"
 
                 val imageCursor = try {
                     contentResolver.query(
@@ -410,7 +417,9 @@ class DedupViewModel : ViewModel() {
                 imageCursor?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-                    val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                    val takenCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_TAKEN)
+                    val modCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_MODIFIED)
+                    val addedCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
                     val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
                     val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
@@ -419,7 +428,17 @@ class DedupViewModel : ViewModel() {
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
                         val name = cursor.getString(nameCol) ?: "Image_$id"
-                        val date = cursor.getLong(dateCol)
+                        val taken = if (takenCol >= 0) cursor.getLong(takenCol) else 0L
+                        val mod = if (modCol >= 0) cursor.getLong(modCol) else 0L
+                        val added = if (addedCol >= 0) cursor.getLong(addedCol) else 0L
+
+                        val realDateMillis = when {
+                            taken > 0L -> taken // DATE_TAKEN is in milliseconds
+                            mod > 0L -> mod * 1000L // DATE_MODIFIED is in seconds -> to millis
+                            added > 0L -> added * 1000L // DATE_ADDED is in seconds -> to millis
+                            else -> System.currentTimeMillis()
+                        }
+
                         val size = cursor.getLong(sizeCol)
                         val w = cursor.getInt(widthCol)
                         val h = cursor.getInt(heightCol)
@@ -438,12 +457,12 @@ class DedupViewModel : ViewModel() {
                             if (thumb != null) {
                                 val dHash = PerceptualHasher.computeDHash(thumb)
                                 thumb.recycle()
-                                list.add(PhotoItem(id, uri, name, date, size, w, h, dHash, isVideo = false, mimeType = mime))
+                                list.add(PhotoItem(id, uri, name, realDateMillis, size, w, h, dHash, isVideo = false, mimeType = mime))
                             }
                         } catch (e: Exception) {
                             // Fallback pseudo-hash based on dimensions & size if thumbnail cannot be generated
                             val pseudoHash = (w.toLong() shl 32) xor (h.toLong() shl 16) xor size
-                            list.add(PhotoItem(id, uri, name, date, size, w, h, pseudoHash, isVideo = false, mimeType = mime))
+                            list.add(PhotoItem(id, uri, name, realDateMillis, size, w, h, pseudoHash, isVideo = false, mimeType = mime))
                         }
 
                         processed++
@@ -464,7 +483,9 @@ class DedupViewModel : ViewModel() {
                 videoCursor?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                    val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                    val takenCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_TAKEN)
+                    val modCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_MODIFIED)
+                    val addedCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
                     val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
                     val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
@@ -474,7 +495,17 @@ class DedupViewModel : ViewModel() {
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
                         val name = cursor.getString(nameCol) ?: "Video_$id"
-                        val date = cursor.getLong(dateCol)
+                        val taken = if (takenCol >= 0) cursor.getLong(takenCol) else 0L
+                        val mod = if (modCol >= 0) cursor.getLong(modCol) else 0L
+                        val added = if (addedCol >= 0) cursor.getLong(addedCol) else 0L
+
+                        val realDateMillis = when {
+                            taken > 0L -> taken // DATE_TAKEN is in milliseconds
+                            mod > 0L -> mod * 1000L // DATE_MODIFIED is in seconds -> to millis
+                            added > 0L -> added * 1000L // DATE_ADDED is in seconds -> to millis
+                            else -> System.currentTimeMillis()
+                        }
+
                         val size = cursor.getLong(sizeCol)
                         val w = cursor.getInt(widthCol)
                         val h = cursor.getInt(heightCol)
@@ -489,7 +520,7 @@ class DedupViewModel : ViewModel() {
                                 id = id,
                                 uri = uri,
                                 name = name,
-                                dateAdded = date,
+                                dateAdded = realDateMillis,
                                 sizeBytes = size,
                                 width = w,
                                 height = h,
@@ -603,7 +634,7 @@ class DedupViewModel : ViewModel() {
                         )
                     }
                 }
-                resultGroups
+                sortGroupsList(resultGroups, _uiState.value.globalSort)
             }
 
             _uiState.update {
@@ -621,6 +652,29 @@ class DedupViewModel : ViewModel() {
             SortOption.DATE_ASC -> photos.sortedBy { it.dateAdded }
             SortOption.SIZE_DESC -> photos.sortedByDescending { it.sizeBytes }
             SortOption.SIZE_ASC -> photos.sortedBy { it.sizeBytes }
+        }
+    }
+
+    private fun sortGroupsList(groups: List<SimilarGroup>, option: SortOption): List<SimilarGroup> {
+        val groupsWithSortedPhotos = groups.map { group ->
+            group.copy(
+                sortOption = option,
+                photos = sortPhotosList(group.photos, option)
+            )
+        }
+        return when (option) {
+            SortOption.DATE_DESC -> groupsWithSortedPhotos.sortedByDescending { g ->
+                g.photos.maxOfOrNull { it.dateAdded } ?: 0L
+            }
+            SortOption.DATE_ASC -> groupsWithSortedPhotos.sortedBy { g ->
+                g.photos.minOfOrNull { it.dateAdded } ?: Long.MAX_VALUE
+            }
+            SortOption.SIZE_DESC -> groupsWithSortedPhotos.sortedByDescending { g ->
+                g.photos.sumOf { it.sizeBytes }
+            }
+            SortOption.SIZE_ASC -> groupsWithSortedPhotos.sortedBy { g ->
+                g.photos.sumOf { it.sizeBytes }
+            }
         }
     }
 
@@ -642,7 +696,7 @@ class DedupViewModel : ViewModel() {
         ScanCacheManager.save(context, _uiState.value)
     }
 
-    fun sortGroup(groupId: Int, sortOption: SortOption) {
+    fun sortGroup(context: Context? = null, groupId: Int, sortOption: SortOption) {
         _uiState.update { state ->
             val updatedGroups = state.groups.map { group ->
                 if (group.id == groupId) {
@@ -654,18 +708,15 @@ class DedupViewModel : ViewModel() {
             }
             state.copy(groups = updatedGroups)
         }
+        context?.let { ScanCacheManager.save(it, _uiState.value) }
     }
 
-    fun sortAllGroups(sortOption: SortOption) {
+    fun sortAllGroups(context: Context? = null, sortOption: SortOption) {
         _uiState.update { state ->
-            val updatedGroups = state.groups.map { group ->
-                group.copy(
-                    sortOption = sortOption,
-                    photos = sortPhotosList(group.photos, sortOption)
-                )
-            }
-            state.copy(globalSort = sortOption, groups = updatedGroups)
+            val sortedGroups = sortGroupsList(state.groups, sortOption)
+            state.copy(globalSort = sortOption, groups = sortedGroups)
         }
+        context?.let { ScanCacheManager.save(it, _uiState.value) }
     }
 
     fun setGroupSelection(context: Context, groupId: Int, markDeleteAll: Boolean, keepBestOne: Boolean = false) {
@@ -868,7 +919,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    Text("Version 1.1.0", fontSize = 12.sp, color = Color.Gray)
+                    Text("Version 1.1.2", fontSize = 12.sp, color = Color.Gray)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))
@@ -991,7 +1042,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                                 DropdownMenuItem(
                                     text = { Text(option.label) },
                                     onClick = {
-                                        viewModel.sortAllGroups(option)
+                                        viewModel.sortAllGroups(context, option)
                                         sortMenuExpanded = false
                                     }
                                 )
@@ -1134,7 +1185,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                                     group = group,
                                     onTogglePhoto = { photoId -> viewModel.togglePhotoStatus(context, group.id, photoId) },
                                     onHoldPhoto = { index -> viewModel.openFullScreen(group, index) },
-                                    onSortChange = { sortOpt -> viewModel.sortGroup(group.id, sortOpt) },
+                                    onSortChange = { sortOpt -> viewModel.sortGroup(context, group.id, sortOpt) },
                                     onSelectAllGroup = { markRed, keepBest ->
                                         viewModel.setGroupSelection(context, group.id, markRed, keepBest)
                                     }
@@ -1667,9 +1718,11 @@ fun formatFileSize(bytes: Long): String {
     return String.format(Locale.US, "%.2f GB", gb)
 }
 
-fun formatDate(epochSeconds: Long): String {
+fun formatDate(dateMillis: Long): String {
+    // shortcut: handles legacy second timestamps < 10B, upgrade if handling negative epoch dates
+    val millis = if (dateMillis in 1 until 10_000_000_000L) dateMillis * 1000L else dateMillis
     val sdf = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
-    return sdf.format(Date(epochSeconds * 1000L))
+    return sdf.format(Date(millis))
 }
 
 fun formatDuration(ms: Long): String {
