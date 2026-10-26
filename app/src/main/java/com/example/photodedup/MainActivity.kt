@@ -2,6 +2,7 @@ package com.example.photodedup
 
 import android.Manifest
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
@@ -11,8 +12,12 @@ import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Size
+import android.widget.MediaController
+import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -51,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.ViewModel
@@ -64,6 +70,7 @@ import coil.decode.ImageDecoderDecoder
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +80,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.*
@@ -111,6 +120,12 @@ data class SimilarGroup(
     val sortOption: SortOption = SortOption.SIZE_DESC
 )
 
+data class AppUpdateInfo(
+    val latestVersion: String,
+    val releaseNotes: String,
+    val downloadUrl: String
+)
+
 data class UiState(
     val isScanning: Boolean = false,
     val scanProgress: Float = 0f,
@@ -122,7 +137,13 @@ data class UiState(
     val similarityThreshold: Int = 8, // Max Hamming distance
     val activeModalGroup: SimilarGroup? = null,
     val activeModalInitialIndex: Int = 0,
-    val isCacheLoaded: Boolean = false
+    val isCacheLoaded: Boolean = false,
+    val isDarkMode: Boolean = true,
+    val availableFolders: List<String> = emptyList(),
+    val selectedFolder: String? = null,
+    val availableUpdate: AppUpdateInfo? = null,
+    val isCheckingUpdate: Boolean = false,
+    val deleteSuccessMessage: String? = null
 )
 
 // --- PERSISTENCE: SCAN CACHE MANAGER ---
@@ -137,6 +158,10 @@ object ScanCacheManager {
             root.put("scannedCount", state.scannedCount)
             root.put("totalCount", state.totalCount)
             root.put("globalSort", state.globalSort.name)
+            root.put("isDarkMode", state.isDarkMode)
+            if (state.selectedFolder != null) {
+                root.put("selectedFolder", state.selectedFolder)
+            }
 
             val groupsArray = JSONArray()
             state.groups.forEach { group ->
@@ -233,6 +258,27 @@ object ScanCacheManager {
         }
     }
 
+    fun isDark(context: Context): Boolean {
+        val file = File(context.filesDir, FILE_NAME)
+        if (!file.exists()) return true
+        return try {
+            JSONObject(file.readText()).optBoolean("isDarkMode", true)
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    fun getSavedFolder(context: Context): String? {
+        val file = File(context.filesDir, FILE_NAME)
+        if (!file.exists()) return null
+        return try {
+            val root = JSONObject(file.readText())
+            if (root.has("selectedFolder")) root.optString("selectedFolder") else null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun clear(context: Context) {
         try {
             File(context.filesDir, FILE_NAME).delete()
@@ -308,6 +354,12 @@ class DedupViewModel : ViewModel() {
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     fun loadCacheIfAvailable(context: Context) {
+        val savedDark = ScanCacheManager.isDark(context)
+        val savedFolder = ScanCacheManager.getSavedFolder(context)
+        _uiState.update { it.copy(isDarkMode = savedDark, selectedFolder = savedFolder) }
+        loadFolders(context)
+        checkForUpdates(context, showToastIfLatest = false)
+
         if (_uiState.value.isCacheLoaded || _uiState.value.groups.isNotEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val cached = ScanCacheManager.load(context)
@@ -325,6 +377,119 @@ class DedupViewModel : ViewModel() {
         }
     }
 
+    fun loadFolders(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val folders = linkedSetOf<String>()
+            val cr = context.contentResolver
+            val projection = arrayOf(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            try {
+                cr.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    if (idx >= 0) {
+                        while (cursor.moveToNext()) {
+                            val f = cursor.getString(idx)
+                            if (!f.isNullOrBlank()) folders.add(f)
+                        }
+                    }
+                }
+            } catch (e: Exception) { /* ignore */ }
+            try {
+                cr.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null, null, null)?.use { cursor ->
+                    val idx = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    if (idx >= 0) {
+                        while (cursor.moveToNext()) {
+                            val f = cursor.getString(idx)
+                            if (!f.isNullOrBlank()) folders.add(f)
+                        }
+                    }
+                }
+            } catch (e: Exception) { /* ignore */ }
+            val sorted = folders.sorted()
+            _uiState.update { it.copy(availableFolders = sorted) }
+        }
+    }
+
+    fun setSelectedFolder(context: Context, folder: String?) {
+        _uiState.update { it.copy(selectedFolder = folder) }
+        ScanCacheManager.save(context, _uiState.value)
+        scanDevicePhotos(context, folder)
+    }
+
+    fun toggleTheme(context: Context) {
+        _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
+        ScanCacheManager.save(context, _uiState.value)
+    }
+
+    fun hideGroup(context: Context, groupId: Int) {
+        _uiState.update { state ->
+            val updated = state.groups.filterNot { it.id == groupId }
+            state.copy(groups = updated)
+        }
+        ScanCacheManager.save(context, _uiState.value)
+    }
+
+    fun clearDeleteMessage() {
+        _uiState.update { it.copy(deleteSuccessMessage = null) }
+    }
+
+    fun dismissUpdateDialog() {
+        _uiState.update { it.copy(availableUpdate = null) }
+    }
+
+    fun checkForUpdates(context: Context, showToastIfLatest: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isCheckingUpdate = true) }
+            try {
+                // shortcut: direct GitHub API releases query, upgrade to OAuth if rate limiting becomes an issue
+                val url = URL("https://api.github.com/repos/devilmancrybabyx/Duplicate-photos-cleaner/releases/latest")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    setRequestProperty("User-Agent", "DupeCleanerApp")
+                }
+                if (conn.responseCode == 200) {
+                    val text = conn.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(text)
+                    val tagName = json.getString("tag_name")
+                    val notes = json.optString("body", "Performance improvements and new features.")
+                    val assets = json.optJSONArray("assets")
+                    var downloadUrl: String? = null
+                    if (assets != null) {
+                        for (i in 0 until assets.length()) {
+                            val a = assets.getJSONObject(i)
+                            val name = a.getString("name")
+                            if (name.endsWith("-release.apk") || name.endsWith(".apk")) {
+                                downloadUrl = a.getString("browser_download_url")
+                                if (name.contains("release")) break
+                            }
+                        }
+                    }
+
+                    val currentTag = "v1.1.3"
+                    if (tagName != currentTag && downloadUrl != null) {
+                        _uiState.update {
+                            it.copy(
+                                isCheckingUpdate = false,
+                                availableUpdate = AppUpdateInfo(tagName, notes, downloadUrl)
+                            )
+                        }
+                    } else {
+                        _uiState.update { it.copy(isCheckingUpdate = false) }
+                        if (showToastIfLatest) {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Dupe cleaner is up to date ($currentTag)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                } else {
+                    _uiState.update { it.copy(isCheckingUpdate = false) }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isCheckingUpdate = false) }
+            }
+        }
+    }
+
     fun clearCache(context: Context) {
         viewModelScope.launch(Dispatchers.IO) {
             ScanCacheManager.clear(context)
@@ -332,7 +497,7 @@ class DedupViewModel : ViewModel() {
         }
     }
 
-    fun scanDevicePhotos(context: Context) {
+    fun scanDevicePhotos(context: Context, folder: String? = _uiState.value.selectedFolder) {
         if (_uiState.value.isScanning) return
         val contentResolver = context.contentResolver
 
@@ -343,7 +508,8 @@ class DedupViewModel : ViewModel() {
                     scanProgress = 0f,
                     scannedCount = 0,
                     totalCount = 0,
-                    scanPhaseText = "Discovering photos & videos...",
+                    selectedFolder = folder,
+                    scanPhaseText = if (folder != null) "Scanning folder: $folder..." else "Discovering photos & videos...",
                     groups = emptyList()
                 )
             }
@@ -380,10 +546,15 @@ class DedupViewModel : ViewModel() {
                 )
                 val videoOrder = "${MediaStore.Video.Media.DATE_TAKEN} DESC, ${MediaStore.Video.Media.DATE_MODIFIED} DESC, ${MediaStore.Video.Media.DATE_ADDED} DESC"
 
+                val imageSelection = if (folder != null) "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME} = ?" else null
+                val imageSelectionArgs = if (folder != null) arrayOf(folder) else null
+                val videoSelection = if (folder != null) "${MediaStore.Video.Media.BUCKET_DISPLAY_NAME} = ?" else null
+                val videoSelectionArgs = if (folder != null) arrayOf(folder) else null
+
                 val imageCursor = try {
                     contentResolver.query(
                         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        imageProjection, null, null, imageOrder
+                        imageProjection, imageSelection, imageSelectionArgs, imageOrder
                     )
                 } catch (e: Exception) {
                     null
@@ -392,7 +563,7 @@ class DedupViewModel : ViewModel() {
                 val videoCursor = try {
                     contentResolver.query(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                        videoProjection, null, null, videoOrder
+                        videoProjection, videoSelection, videoSelectionArgs, videoOrder
                     )
                 } catch (e: Exception) {
                     null
@@ -760,14 +931,42 @@ class DedupViewModel : ViewModel() {
     }
 
     fun removeDeletedPhotosFromState(context: Context, deletedIds: Set<Long>) {
+        var freedBytes = 0L
         _uiState.update { state ->
             val cleanedGroups = state.groups.mapNotNull { group ->
+                val toDelete = group.photos.filter { it.id in deletedIds }
+                freedBytes += toDelete.sumOf { it.sizeBytes }
                 val remaining = group.photos.filterNot { it.id in deletedIds }
                 if (remaining.size > 1) group.copy(photos = remaining) else null
             }
-            state.copy(groups = cleanedGroups, activeModalGroup = null)
+            state.copy(
+                groups = cleanedGroups,
+                activeModalGroup = null,
+                deleteSuccessMessage = "Cleaned ${deletedIds.size} items (${formatFileSize(freedBytes)}) successfully!"
+            )
         }
         ScanCacheManager.save(context, _uiState.value)
+    }
+}
+
+fun downloadAndInstallApk(context: Context, downloadUrl: String, versionTag: String) {
+    try {
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val fileName = "DupeCleaner-$versionTag-release.apk"
+        val request = DownloadManager.Request(Uri.parse(downloadUrl)).apply {
+            setTitle("Dupe Cleaner $versionTag")
+            setDescription("Downloading latest release APK...")
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            setMimeType("application/vnd.android.package-archive")
+        }
+        dm.enqueue(request)
+        Toast.makeText(context, "Downloading update in background... Check notifications to install", Toast.LENGTH_LONG).show()
+    } catch (e: Exception) {
+        val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(browserIntent)
     }
 }
 
@@ -792,17 +991,33 @@ class MainActivity : ComponentActivity() {
         Coil.setImageLoader(imageLoader)
 
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF4CAF50),
-                    secondary = Color(0xFF03DAC6),
-                    background = Color(0xFF121212),
-                    surface = Color(0xFF1E1E1E),
-                    error = Color(0xFFE53935)
-                )
-            ) {
+            val viewModel: DedupViewModel = viewModel()
+            val state by viewModel.uiState.collectAsState()
+
+            val darkColors = darkColorScheme(
+                primary = Color(0xFF4CAF50),
+                secondary = Color(0xFF03DAC6),
+                background = Color(0xFF121212),
+                surface = Color(0xFF1E1E1E),
+                surfaceVariant = Color(0xFF252525),
+                onBackground = Color.White,
+                onSurface = Color.White,
+                error = Color(0xFFE53935)
+            )
+            val lightColors = lightColorScheme(
+                primary = Color(0xFF2E7D32),
+                secondary = Color(0xFF00796B),
+                background = Color(0xFFF7F9FA),
+                surface = Color(0xFFFFFFFF),
+                surfaceVariant = Color(0xFFEEEEEE),
+                onBackground = Color(0xFF1C1B1F),
+                onSurface = Color(0xFF1C1B1F),
+                error = Color(0xFFD32F2F)
+            )
+
+            MaterialTheme(colorScheme = if (state.isDarkMode) darkColors else lightColors) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    DedupAppScreen()
+                    DedupAppScreen(viewModel = viewModel)
                 }
             }
         }
@@ -919,7 +1134,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    Text("Version 1.1.2", fontSize = 12.sp, color = Color.Gray)
+                    Text("Version 1.1.3", fontSize = 12.sp, color = Color.Gray)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))
@@ -928,10 +1143,11 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                 Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
                     Text("Scan Statistics", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF03DAC6))
                     Spacer(Modifier.height(8.dp))
-                    Text("Groups detected: ${state.groups.size}", fontSize = 14.sp, color = Color.LightGray)
+                    Text("Folder: ${state.selectedFolder ?: "All Media"}", fontSize = 13.sp, color = Color.LightGray)
+                    Text("Groups detected: ${state.groups.size}", fontSize = 13.sp, color = Color.LightGray)
                     Text(
                         "Recoverable storage: ${formatFileSize(markedPhotos.sumOf { it.sizeBytes })}",
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         color = Color.LightGray
                     )
                 }
@@ -940,12 +1156,49 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
 
                 // Actions
                 NavigationDrawerItem(
+                    icon = {
+                        Icon(
+                            if (state.isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            contentDescription = null,
+                            tint = Color(0xFFFFB300)
+                        )
+                    },
+                    label = { Text(if (state.isDarkMode) "Switch to Light Mode" else "Switch to Dark Mode") },
+                    selected = false,
+                    onClick = {
+                        viewModel.toggleTheme(context)
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+
+                NavigationDrawerItem(
                     icon = { Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFF4CAF50)) },
                     label = { Text("Rescan Media Gallery") },
                     selected = false,
                     onClick = {
                         scope.launch { drawerState.close() }
                         permissionLauncher.launch(permissionsToRequest)
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = Color(0xFF03DAC6)) },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Check for Updates")
+                            if (state.availableUpdate != null) {
+                                Spacer(Modifier.width(8.dp))
+                                Badge(containerColor = Color(0xFFE53935)) {
+                                    Text("NEW", color = Color.White, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    },
+                    selected = false,
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        viewModel.checkForUpdates(context, showToastIfLatest = true)
                     },
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
@@ -1023,6 +1276,48 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         }
                     },
                     actions = {
+                        // Light and Dark Mode Toggle Button (Requirement 5)
+                        IconButton(onClick = { viewModel.toggleTheme(context) }) {
+                            Icon(
+                                if (state.isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Toggle Light/Dark Mode",
+                                tint = if (state.isDarkMode) Color(0xFFFFB300) else Color(0xFF1976D2)
+                            )
+                        }
+
+                        // Per-Folder Scan Option Dropdown (Requirement 3)
+                        var folderMenuExpanded by remember { mutableStateOf(false) }
+                        IconButton(onClick = { folderMenuExpanded = true }) {
+                            Icon(Icons.Default.Folder, contentDescription = "Scan by Folder")
+                        }
+                        DropdownMenu(
+                            expanded = folderMenuExpanded,
+                            onDismissRequest = { folderMenuExpanded = false }
+                        ) {
+                            Text(
+                                "Scan Specific Folder",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                            DropdownMenuItem(
+                                text = { Text("📁 All Media Folders") },
+                                onClick = {
+                                    viewModel.setSelectedFolder(context, null)
+                                    folderMenuExpanded = false
+                                }
+                            )
+                            state.availableFolders.forEach { folderName ->
+                                DropdownMenuItem(
+                                    text = { Text("📁 $folderName") },
+                                    onClick = {
+                                        viewModel.setSelectedFolder(context, folderName)
+                                        folderMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+
                         // Global Sort Menu
                         var sortMenuExpanded by remember { mutableStateOf(false) }
                         IconButton(onClick = { sortMenuExpanded = true }) {
@@ -1176,26 +1471,153 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         }
                     }
                     else -> {
-                        LazyColumn(
-                            contentPadding = PaddingValues(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            items(state.groups, key = { it.id }) { group ->
-                                SimilarGroupCard(
-                                    group = group,
-                                    onTogglePhoto = { photoId -> viewModel.togglePhotoStatus(context, group.id, photoId) },
-                                    onHoldPhoto = { index -> viewModel.openFullScreen(group, index) },
-                                    onSortChange = { sortOpt -> viewModel.sortGroup(context, group.id, sortOpt) },
-                                    onSelectAllGroup = { markRed, keepBest ->
-                                        viewModel.setGroupSelection(context, group.id, markRed, keepBest)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Active Folder Chip
+                            if (state.selectedFolder != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        shape = RoundedCornerShape(16.dp),
+                                        modifier = Modifier.clickable { viewModel.setSelectedFolder(context, null) }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                "Folder: ${state.selectedFolder}",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Show All Folders",
+                                                modifier = Modifier.size(14.dp),
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
                                     }
-                                )
+                                }
+                            }
+
+                            LazyColumn(
+                                contentPadding = PaddingValues(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                items(state.groups, key = { it.id }) { group ->
+                                    Box(modifier = Modifier.animateItem()) {
+                                        SimilarGroupCard(
+                                            group = group,
+                                            onTogglePhoto = { photoId -> viewModel.togglePhotoStatus(context, group.id, photoId) },
+                                            onHoldPhoto = { index -> viewModel.openFullScreen(group, index) },
+                                            onSortChange = { sortOpt -> viewModel.sortGroup(context, group.id, sortOpt) },
+                                            onSelectAllGroup = { markRed, keepBest ->
+                                                viewModel.setGroupSelection(context, group.id, markRed, keepBest)
+                                            },
+                                            onHideGroup = { viewModel.hideGroup(context, group.id) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Celebratory Deletion Success Animated Banner (Requirement 8)
+                AnimatedVisibility(
+                    visible = state.deleteSuccessMessage != null,
+                    enter = slideInVertically { -it } + fadeIn(),
+                    exit = slideOutVertically { -it } + fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 12.dp, start = 16.dp, end = 16.dp)
+                ) {
+                    Surface(
+                        color = Color(0xFF2E7D32),
+                        shape = RoundedCornerShape(12.dp),
+                        shadowElevation = 8.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                state.deleteSuccessMessage ?: "",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(Modifier.weight(1f))
+                            IconButton(
+                                onClick = { viewModel.clearDeleteMessage() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", tint = Color.White, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Auto-clear deletion banner after delay
+    LaunchedEffect(state.deleteSuccessMessage) {
+        if (state.deleteSuccessMessage != null) {
+            delay(3200)
+            viewModel.clearDeleteMessage()
+        }
+    }
+
+    // In-App APK Update Dialog (Requirement 9)
+    if (state.availableUpdate != null) {
+        val update = state.availableUpdate!!
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissUpdateDialog() },
+            icon = { Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = Color(0xFF03DAC6)) },
+            title = { Text("Update Available (${update.latestVersion})", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("A newer version of Dupe cleaner is available:")
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            update.releaseNotes.take(300),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        downloadAndInstallApk(context, update.downloadUrl, update.latestVersion)
+                        viewModel.dismissUpdateDialog()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("DOWNLOAD & INSTALL", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissUpdateDialog() }) {
+                    Text("LATER")
+                }
+            }
+        )
     }
 
     // Confirmation Dialog
@@ -1340,17 +1762,18 @@ fun SimilarGroupCard(
     onTogglePhoto: (Long) -> Unit,
     onHoldPhoto: (Int) -> Unit,
     onSortChange: (SortOption) -> Unit,
-    onSelectAllGroup: (Boolean, Boolean) -> Unit
+    onSelectAllGroup: (Boolean, Boolean) -> Unit,
+    onHideGroup: () -> Unit
 ) {
     var sortMenuOpen by remember { mutableStateOf(false) }
 
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            // Header Row: EXACT tag (only if exact) + Title + Sort Dropdown
+            // Header Row: EXACT tag (only if exact) + Title (#399) + Sort Dropdown + Hide/Finish Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1369,30 +1792,48 @@ fun SimilarGroupCard(
                         Spacer(Modifier.width(8.dp))
                     }
 
+                    // Requirement 6: remove "group #399" names to just "#399"
                     Text(
-                        "Group #${group.id} (${group.photos.size})",
+                        "#${group.id} (${group.photos.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
                 }
 
-                // Sort Button
-                Box {
-                    TextButton(onClick = { sortMenuOpen = true }) {
-                        Icon(Icons.Default.SwapVert, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(group.sortOption.label, fontSize = 12.sp)
-                    }
-                    DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                        SortOption.entries.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option.label) },
-                                onClick = {
-                                    onSortChange(option)
-                                    sortMenuOpen = false
-                                }
-                            )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Sort Button
+                    Box {
+                        TextButton(onClick = { sortMenuOpen = true }) {
+                            Icon(Icons.Default.SwapVert, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(group.sortOption.label, fontSize = 12.sp)
                         }
+                        DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                            SortOption.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        onSortChange(option)
+                                        sortMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.width(4.dp))
+
+                    // Requirement 4: Button for hide or finished a group
+                    IconButton(
+                        onClick = onHideGroup,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = "Hide or Finish group",
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
@@ -1446,15 +1887,17 @@ fun SimilarGroupCard(
 
             Spacer(Modifier.height(8.dp))
 
-            // Horizontal Photo/Video Row inside Group
+            // Horizontal Photo/Video Row inside Group (Requirement 8: animated deletions)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(group.photos.size) { index ->
-                    val photo = group.photos[index]
-                    PhotoThumbnailTile(
-                        photo = photo,
-                        onTap = { onTogglePhoto(photo.id) },
-                        onLongPress = { onHoldPhoto(index) }
-                    )
+                items(group.photos, key = { it.id }) { photo ->
+                    Box(modifier = Modifier.animateItem()) {
+                        val index = group.photos.indexOf(photo)
+                        PhotoThumbnailTile(
+                            photo = photo,
+                            onTap = { onTogglePhoto(photo.id) },
+                            onLongPress = { onHoldPhoto(index) }
+                        )
+                    }
                 }
             }
         }
@@ -1566,7 +2009,7 @@ fun PhotoThumbnailTile(
     }
 }
 
-// --- FULL SCREEN SWIPE MODAL (WITH SHARE BUTTON) ---
+// --- FULL SCREEN SWIPE MODAL (WITH VIDEO PLAYER, SHARE & 1-CLICK HIDE TEXT) ---
 
 @Composable
 fun FullScreenGroupPagerModal(
@@ -1576,6 +2019,8 @@ fun FullScreenGroupPagerModal(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    var showControls by remember { mutableStateOf(true) }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1590,114 +2035,170 @@ fun FullScreenGroupPagerModal(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .clickable { showControls = !showControls }
         ) {
-            // Horizontal Pager
+            // Horizontal Pager (Requirement 1: Native Video Player for videos)
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 val item = group.photos[page]
-                val request = remember(item.uri) {
-                    ImageRequest.Builder(context)
-                        .data(item.uri)
-                        .crossfade(true)
-                        .build()
+                if (item.isVideo) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable { showControls = !showControls },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    val mc = MediaController(ctx)
+                                    mc.setAnchorView(this)
+                                    setMediaController(mc)
+                                    setVideoURI(item.uri)
+                                    setOnPreparedListener { mp ->
+                                        mp.isLooping = true
+                                        if (pagerState.currentPage == page) start()
+                                    }
+                                }
+                            },
+                            update = { view ->
+                                if (pagerState.currentPage == page) {
+                                    if (!view.isPlaying) view.start()
+                                } else {
+                                    if (view.isPlaying) view.pause()
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                } else {
+                    val request = remember(item.uri) {
+                        ImageRequest.Builder(context)
+                            .data(item.uri)
+                            .crossfade(true)
+                            .build()
+                    }
+                    AsyncImage(
+                        model = request,
+                        contentDescription = item.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-                AsyncImage(
-                    model = request,
-                    contentDescription = item.name,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
             }
 
-            // Top Overlay: Close Button + Position Indicator + Share Button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            // Top Overlay: Close Button + Position Indicator + Hide Text Toggle + Share Button (Requirement 2)
+            AnimatedVisibility(
+                visible = showControls,
+                enter = fadeIn() + slideInVertically { -it },
+                exit = fadeOut() + slideOutVertically { -it },
+                modifier = Modifier.align(Alignment.TopCenter)
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
-                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
 
-                Text(
-                    "Item ${pagerState.currentPage + 1} of ${group.photos.size}",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp
-                )
+                    Text(
+                        "Item ${pagerState.currentPage + 1} of ${group.photos.size}",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
 
-                // Share Button for held pictures/videos
-                IconButton(onClick = {
-                    currentPhoto?.let { photo ->
-                        try {
-                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                type = if (photo.isVideo) "video/*" else "image/*"
-                                putExtra(Intent.EXTRA_STREAM, photo.uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    Row {
+                        // 1-Click Hide Text / Controls Button (Requirement 2)
+                        IconButton(onClick = { showControls = false }) {
+                            Icon(
+                                Icons.Default.VisibilityOff,
+                                contentDescription = "Hide Info",
+                                tint = Color.White
+                            )
+                        }
+
+                        // Share Button for held pictures/videos
+                        IconButton(onClick = {
+                            currentPhoto?.let { photo ->
+                                try {
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = if (photo.isVideo) "video/*" else "image/*"
+                                        putExtra(Intent.EXTRA_STREAM, photo.uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(shareIntent, "Share Media"))
+                                } catch (e: Exception) {
+                                    // Fallback
+                                }
                             }
-                            context.startActivity(Intent.createChooser(shareIntent, "Share Media"))
-                        } catch (e: Exception) {
-                            // Fallback
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White)
                         }
                     }
-                }) {
-                    Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.White)
                 }
             }
 
             // Bottom Overlay: Metadata + Large Green (Keep) & Red (Delete) Toggle Buttons
-            currentPhoto?.let { photo ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .background(Color.Black.copy(alpha = 0.82f))
-                        .padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(photo.name, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                    val extraInfo = if (photo.isVideo) " • ${formatDuration(photo.durationMs)}" else ""
-                    Text(
-                        "${formatFileSize(photo.sizeBytes)} • ${photo.width}x${photo.height}$extraInfo • ${formatDate(photo.dateAdded)}",
-                        color = Color.LightGray,
-                        fontSize = 13.sp
-                    )
-                    Spacer(Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+            AnimatedVisibility(
+                visible = showControls,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                currentPhoto?.let { photo ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.85f))
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // KEEP BUTTON
-                        Button(
-                            onClick = { if (photo.markedForDelete) onToggleStatus(photo.id) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (!photo.markedForDelete) Color(0xFF4CAF50) else Color(0xFF2E3B2E)
-                            ),
-                            modifier = Modifier.weight(1f).height(52.dp)
-                        ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("KEEP", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
+                        Text(photo.name, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        val extraInfo = if (photo.isVideo) " • ${formatDuration(photo.durationMs)}" else ""
+                        Text(
+                            "${formatFileSize(photo.sizeBytes)} • ${photo.width}x${photo.height}$extraInfo • ${formatDate(photo.dateAdded)}",
+                            color = Color.LightGray,
+                            fontSize = 13.sp
+                        )
+                        Spacer(Modifier.height(16.dp))
 
-                        // DELETE BUTTON
-                        Button(
-                            onClick = { if (!photo.markedForDelete) onToggleStatus(photo.id) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (photo.markedForDelete) Color(0xFFE53935) else Color(0xFF3E2727)
-                            ),
-                            modifier = Modifier.weight(1f).height(52.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("DELETE", fontWeight = FontWeight.Bold, color = Color.White)
+                            // KEEP BUTTON
+                            Button(
+                                onClick = { if (photo.markedForDelete) onToggleStatus(photo.id) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (!photo.markedForDelete) Color(0xFF4CAF50) else Color(0xFF2E3B2E)
+                                ),
+                                modifier = Modifier.weight(1f).height(52.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
+                                Spacer(Modifier.width(8.dp))
+                                Text("KEEP", fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+
+                            // DELETE BUTTON
+                            Button(
+                                onClick = { if (!photo.markedForDelete) onToggleStatus(photo.id) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (photo.markedForDelete) Color(0xFFE53935) else Color(0xFF3E2727)
+                                ),
+                                modifier = Modifier.weight(1f).height(52.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
+                                Spacer(Modifier.width(8.dp))
+                                Text("DELETE", fontWeight = FontWeight.Bold, color = Color.White)
+                            }
                         }
                     }
                 }

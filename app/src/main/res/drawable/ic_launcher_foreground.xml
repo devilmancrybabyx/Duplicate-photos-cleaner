@@ -4,50 +4,44 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group
-        android:scaleX="0.58"
-        android:scaleY="0.58"
-        android:translateX="22.68"
-        android:translateY="22.68">
-        
-        <!-- Back duplicate card outline (Emerald Dark) -->
-        <path
-            android:fillColor="#1B4D3E"
-            android:pathData="M26,16h48c4.4,0 8,3.6 8,8v48c0,4.4 -3.6,8 -8,8H26c-4.4,0 -8,-3.6 -8,-8V24c0,-4.4 3.6,-8 8,-8z" />
-        
-        <!-- Front primary media card (Emerald Accent) -->
-        <path
-            android:fillColor="#22C55E"
-            android:pathData="M34,26h48c4.4,0 8,3.6 8,8v48c0,4.4 -3.6,8 -8,8H34c-4.4,0 -8,-3.6 -8,-8V34c0,-4.4 3.6,-8 8,-8z" />
-        
-        <!-- Inner image screen surface (Dark slate) -->
-        <path
-            android:fillColor="#121820"
-            android:pathData="M38,32h40c2.2,0 4,1.8 4,4v40c0,2.2 -1.8,4 -4,4H38c-2.2,0 -4,-1.8 -4,-4V36c0,-2.2 1.8,-4 4,-4z" />
-        
-        <!-- Mountain peaks / photo landscape -->
-        <path
-            android:fillColor="#10B981"
-            android:pathData="M40,70l12,-16l10,12l8,-10l12,14H40z" />
-        
-        <!-- Sun disc -->
-        <path
-            android:fillColor="#34D399"
-            android:pathData="M52,42c0,-3.3 2.7,-6 6,-6s6,2.7 6,6s-2.7,6 -6,6s-6,-2.7 -6,-6z" />
-        
-        <!-- Video play triangle (Cyan) -->
-        <path
-            android:fillColor="#06B6D4"
-            android:pathData="M66,48l10,6l-10,6V48z" />
-        
-        <!-- Sparkle Clean Badge (Cyan) -->
-        <path
-            android:fillColor="#00E5FF"
-            android:pathData="M24,24l3,7l7,3l-7,3l-3,7l-3,-7l-7,-3l7,-3z" />
-            
-        <!-- Small Star (Gold) -->
-        <path
-            android:fillColor="#FFD700"
-            android:pathData="M84,20l2,4l4,2l-4,2l-2,4l-2,-4l-4,-2l4,-2z" />
-    </group>
+
+    <!-- Back Duplicate Media Card (Teal Shadow) -->
+    <path
+        android:fillColor="#1B3E32"
+        android:pathData="M30,38h32c4.4,0 8,3.6 8,8v32c0,4.4 -3.6,8 -8,8H30c-4.4,0 -8,-3.6 -8,-8V46c0,-4.4 3.6,-8 8,-8z" />
+
+    <!-- Front Primary Media Card Frame (Emerald Green) -->
+    <path
+        android:fillColor="#22C55E"
+        android:pathData="M42,26h32c4.4,0 8,3.6 8,8v32c0,4.4 -3.6,8 -8,8H42c-4.4,0 -8,-3.6 -8,-8V34c0,-4.4 3.6,-8 8,-8z" />
+
+    <!-- Front Card Surface (Deep Obsidian Slate) -->
+    <path
+        android:fillColor="#121820"
+        android:pathData="M45,30h26c2.2,0 4,1.8 4,4v24c0,2.2 -1.8,4 -4,4H45c-2.2,0 -4,-1.8 -4,-4V34c0,-2.2 1.8,-4 4,-4z" />
+
+    <!-- Media Picture Mountain / Landscape Accent (Mint) -->
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M41,58l9,-11l8,9l8,-8l9,10H41z" />
+
+    <!-- Sun / Aperture Disc (Teal) -->
+    <path
+        android:fillColor="#34D399"
+        android:pathData="M51,40c0,-2.2 1.8,-4 4,-4s4,1.8 4,4s-1.8,4 -4,4s-4,-1.8 -4,-4z" />
+
+    <!-- Video Indicator Triangle (Cyan) -->
+    <path
+        android:fillColor="#06B6D4"
+        android:pathData="M65,39l5,3l-5,3z" />
+
+    <!-- Large Magic Cleaning Star (Cyan Spark) -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M78,18l2.5,5.5l5.5,2.5l-5.5,2.5l-2.5,5.5l-2.5,-5.5l-5.5,-2.5l5.5,-2.5z" />
+
+    <!-- Small Secondary Cleaning Star (Mint Spark) -->
+    <path
+        android:fillColor="#6EE7B7"
+        android:pathData="M26,66l1.5,3.5l3.5,1.5l-3.5,1.5l-1.5,3.5l-1.5,-3.5l-3.5,-1.5l3.5,-1.5z" />
 </vector>
