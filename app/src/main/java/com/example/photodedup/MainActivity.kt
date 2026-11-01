@@ -109,7 +109,10 @@ data class PhotoItem(
     val isVideo: Boolean = false,
     val durationMs: Long = 0L,
     val mimeType: String = "",
-    val markedForDelete: Boolean = false // false = Green (Keep), true = Red (Delete)
+    val markedForDelete: Boolean = false, // false = Green (Keep), true = Red (Delete)
+    val pHash: Long = 0L,
+    val cropSquareHash: Long = 0L,
+    val cropInsetHash: Long = 0L
 )
 
 data class SimilarGroup(
@@ -177,6 +180,9 @@ object ScanCacheManager {
                     pObj.put("width", p.width)
                     pObj.put("height", p.height)
                     pObj.put("dHash", p.dHash)
+                    pObj.put("pHash", p.pHash)
+                    pObj.put("cropSquareHash", p.cropSquareHash)
+                    pObj.put("cropInsetHash", p.cropInsetHash)
                     pObj.put("sha256", p.sha256)
                     pObj.put("isVideo", p.isVideo)
                     pObj.put("durationMs", p.durationMs)
@@ -230,6 +236,9 @@ object ScanCacheManager {
                     val width = pObj.getInt("width")
                     val height = pObj.getInt("height")
                     val dHash = pObj.getLong("dHash")
+                    val pHash = pObj.optLong("pHash", 0L)
+                    val cropSquareHash = pObj.optLong("cropSquareHash", 0L)
+                    val cropInsetHash = pObj.optLong("cropInsetHash", 0L)
                     val sha256 = pObj.optString("sha256", "")
                     val isVideo = pObj.optBoolean("isVideo", false)
                     val durationMs = pObj.optLong("durationMs", 0L)
@@ -239,7 +248,8 @@ object ScanCacheManager {
                     photos.add(
                         PhotoItem(
                             pId, uri, name, dateAdded, sizeBytes, width, height, dHash,
-                            sha256, isVideo, durationMs, mimeType, markedForDelete
+                            sha256, isVideo, durationMs, mimeType, markedForDelete,
+                            pHash, cropSquareHash, cropInsetHash
                         )
                     )
                 }
@@ -272,14 +282,22 @@ object ScanCacheManager {
     }
 }
 
-// --- PERCEPTUAL HASH (dHash) & SHA-256 ENGINE ---
+// --- PERCEPTUAL HASH (dHash, pHash & Multi-Crop) & SHA-256 ENGINE ---
 
 object PerceptualHasher {
+    // shortcut: 32x32 DCT with 8x8 low-frequency truncation, upgrade to neural embeddings if non-linear geometric warping needed
+    private val COS_TABLE: Array<FloatArray> = Array(8) { u ->
+        FloatArray(32) { x ->
+            kotlin.math.cos(((2 * x + 1) * u * Math.PI / 64.0)).toFloat()
+        }
+    }
+
     /**
      * Computes a 64-bit Difference Hash (dHash) from a Bitmap.
      * Resizes to 9x8 grayscale and compares adjacent horizontal pixels.
      */
     fun computeDHash(bitmap: Bitmap): Long {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return 0L
         val scaled = Bitmap.createScaledBitmap(bitmap, 9, 8, true)
         var hash = 0L
         var bitIndex = 0
@@ -297,6 +315,98 @@ object PerceptualHasher {
         }
         if (scaled != bitmap) scaled.recycle()
         return hash
+    }
+
+    /**
+     * Computes a 64-bit DCT Perceptual Hash (pHash) from a Bitmap.
+     * Highly invariant to color edits, filters, saturation, contrast, B&W conversion, and brightness.
+     */
+    fun computePHash(bitmap: Bitmap): Long {
+        if (bitmap.width <= 0 || bitmap.height <= 0) return 0L
+        val scaled = Bitmap.createScaledBitmap(bitmap, 32, 32, true)
+        val pixels = IntArray(1024)
+        scaled.getPixels(pixels, 0, 32, 0, 0, 32, 32)
+        if (scaled != bitmap) scaled.recycle()
+
+        // 1. Grayscale luminance matrix
+        val matrix = Array(32) { y ->
+            FloatArray(32) { x ->
+                val c = pixels[y * 32 + x]
+                0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
+            }
+        }
+
+        // 2. Separable 2D DCT (Row then Column)
+        val rowDct = Array(32) { y ->
+            FloatArray(8) { u ->
+                var sum = 0f
+                val row = matrix[y]
+                val cosU = COS_TABLE[u]
+                for (x in 0 until 32) {
+                    sum += row[x] * cosU[x]
+                }
+                sum
+            }
+        }
+
+        val dct = FloatArray(64)
+        for (u in 0 until 8) {
+            for (v in 0 until 8) {
+                var sum = 0f
+                val cosV = COS_TABLE[v]
+                for (y in 0 until 32) {
+                    sum += rowDct[y][u] * cosV[y]
+                }
+                dct[v * 8 + u] = sum
+            }
+        }
+
+        // 3. Exclude DC (index 0) and compute median of remaining 63 AC coefficients
+        val ac = FloatArray(63) { dct[it + 1] }
+        ac.sort()
+        val median = ac[31]
+
+        // 4. Construct 64-bit hash
+        var hash = 0L
+        for (i in 0 until 64) {
+            if (dct[i] > median) {
+                hash = hash or (1L shl i)
+            }
+        }
+        return hash
+    }
+
+    /**
+     * Computes multi-crop perceptual hashes (Center Square crop + Center Inset 75% crop).
+     * Enables matching photos cropped to 1:1, 4:3, 16:9 or zoom-cropped into the subject.
+     */
+    fun computeCropHashes(bitmap: Bitmap): Pair<Long, Long> {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= 0 || h <= 0) return Pair(0L, 0L)
+
+        // 1. Center Square Crop
+        val side = minOf(w, h)
+        val sqX = (w - side) / 2
+        val sqY = (h - side) / 2
+        val squareBitmap = if (w == side && h == side) {
+            bitmap
+        } else {
+            Bitmap.createBitmap(bitmap, sqX, sqY, side, side)
+        }
+        val cropSquareHash = computePHash(squareBitmap)
+        if (squareBitmap != bitmap) squareBitmap.recycle()
+
+        // 2. Center Inset Crop (75% zoom-in)
+        val inW = (w * 0.75f).toInt().coerceAtLeast(8)
+        val inH = (h * 0.75f).toInt().coerceAtLeast(8)
+        val inX = (w - inW) / 2
+        val inY = (h - inH) / 2
+        val insetBitmap = Bitmap.createBitmap(bitmap, inX, inY, inW, inH)
+        val cropInsetHash = computePHash(insetBitmap)
+        if (insetBitmap != bitmap) insetBitmap.recycle()
+
+        return Pair(cropSquareHash, cropInsetHash)
     }
 
     private fun luminance(color: Int): Int {
@@ -409,7 +519,7 @@ class DedupViewModel : ViewModel() {
                         }
                     }
 
-                    val currentTag = "v1.1.5"
+                    val currentTag = "v1.1.6"
                     if (tagName != currentTag && downloadUrl != null) {
                         _uiState.update {
                             it.copy(
@@ -565,8 +675,26 @@ class DedupViewModel : ViewModel() {
                             }
                             if (thumb != null) {
                                 val dHash = PerceptualHasher.computeDHash(thumb)
+                                val pHash = PerceptualHasher.computePHash(thumb)
+                                val (cropSquareHash, cropInsetHash) = PerceptualHasher.computeCropHashes(thumb)
                                 thumb.recycle()
-                                list.add(PhotoItem(id, uri, name, realDateMillis, size, w, h, dHash, isVideo = false, mimeType = mime))
+                                list.add(
+                                    PhotoItem(
+                                        id = id,
+                                        uri = uri,
+                                        name = name,
+                                        dateAdded = realDateMillis,
+                                        sizeBytes = size,
+                                        width = w,
+                                        height = h,
+                                        dHash = dHash,
+                                        isVideo = false,
+                                        mimeType = mime,
+                                        pHash = pHash,
+                                        cropSquareHash = cropSquareHash,
+                                        cropInsetHash = cropInsetHash
+                                    )
+                                )
                             }
                         } catch (e: Exception) {
                             // Fallback pseudo-hash based on dimensions & size if thumbnail cannot be generated
@@ -679,8 +807,6 @@ class DedupViewModel : ViewModel() {
                     visited[i] = true
                     var allExact = true
 
-                    val baseRatio = if (base.height > 0) base.width.toFloat() / base.height else 1f
-
                     for (j in i + 1 until rawMedia.size) {
                         if (visited[j]) continue
                         val candidate = rawMedia[j]
@@ -688,19 +814,32 @@ class DedupViewModel : ViewModel() {
                         // Separate photos and videos
                         if (base.isVideo != candidate.isVideo) continue
 
-                        // Check aspect ratio for photos
-                        if (!base.isVideo) {
-                            val candRatio = if (candidate.height > 0) candidate.width.toFloat() / candidate.height else 1f
-                            if (abs(baseRatio - candRatio) > 0.35f) continue
-                        } else {
-                            // For videos, duration must be within 1 second
-                            if (abs(base.durationMs - candidate.durationMs) > 1000L) continue
-                        }
-
                         val dist = if (!base.isVideo) {
-                            PerceptualHasher.hammingDistance(base.dHash, candidate.dHash)
+                            // 1. Full-frame gradient dHash (baseline match for burst/duplicates)
+                            val dDist = PerceptualHasher.hammingDistance(base.dHash, candidate.dHash)
+
+                            // 2. Full-frame frequency pHash (invariant to filters, B&W, contrast, exposure, color edits)
+                            val pDist = if (base.pHash != 0L && candidate.pHash != 0L) {
+                                PerceptualHasher.hammingDistance(base.pHash, candidate.pHash)
+                            } else 64
+
+                            // 3. Multi-crop perceptual hashes (detects square crops, aspect-ratio crops, zoom/inset crops, and filtered crops)
+                            var minCropDist = 64
+                            if (base.cropSquareHash != 0L || candidate.cropSquareHash != 0L || base.cropInsetHash != 0L || candidate.cropInsetHash != 0L) {
+                                val c1 = if (base.cropSquareHash != 0L && candidate.pHash != 0L) PerceptualHasher.hammingDistance(base.cropSquareHash, candidate.pHash) else 64
+                                val c2 = if (candidate.cropSquareHash != 0L && base.pHash != 0L) PerceptualHasher.hammingDistance(candidate.cropSquareHash, base.pHash) else 64
+                                val c3 = if (base.cropSquareHash != 0L && candidate.cropSquareHash != 0L) PerceptualHasher.hammingDistance(base.cropSquareHash, candidate.cropSquareHash) else 64
+                                val c4 = if (base.cropInsetHash != 0L && candidate.pHash != 0L) PerceptualHasher.hammingDistance(base.cropInsetHash, candidate.pHash) else 64
+                                val c5 = if (candidate.cropInsetHash != 0L && base.pHash != 0L) PerceptualHasher.hammingDistance(candidate.cropInsetHash, base.pHash) else 64
+                                val c6 = if (base.cropInsetHash != 0L && candidate.cropInsetHash != 0L) PerceptualHasher.hammingDistance(base.cropInsetHash, candidate.cropInsetHash) else 64
+                                minCropDist = minOf(c1, minOf(c2, minOf(c3, minOf(c4, minOf(c5, c6)))))
+                            }
+
+                            minOf(dDist, minOf(pDist, minCropDist))
                         } else {
-                            if (base.durationMs == candidate.durationMs && base.sizeBytes == candidate.sizeBytes) 0 else 20
+                            if (abs(base.durationMs - candidate.durationMs) > 1000L) 64
+                            else if (base.durationMs == candidate.durationMs && base.sizeBytes == candidate.sizeBytes) 0
+                            else 20
                         }
 
                         // Similar or exact match check
@@ -1072,7 +1211,7 @@ fun DedupAppScreen(viewModel: DedupViewModel = viewModel()) {
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
-                    Text("Version 1.1.5", fontSize = 12.sp, color = Color.Gray)
+                    Text("Version 1.1.6", fontSize = 12.sp, color = Color.Gray)
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFF2C2C2C))

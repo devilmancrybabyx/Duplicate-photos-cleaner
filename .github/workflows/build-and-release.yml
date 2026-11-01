@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.1.5)'
+        description: 'Release Tag (e.g. v1.1.6)'
         required: false
-        default: 'v1.1.5'
+        default: 'v1.1.6'
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG="${{ github.event.inputs.tag_name }}"
           else
-            TAG="v1.1.5"
+            TAG="v1.1.6"
           fi
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -90,13 +90,10 @@ jobs:
           body: |
             ## 📸 Dupe cleaner ${{ steps.release_tag.outputs.TAG }}
 
-            ### 🚀 What's New in v1.1.5:
-            - **⚡ Direct Permanent Latest Download**: Added permanent `DupeCleaner-release.apk` asset download endpoint so the README big download button always downloads the latest release APK directly.
-            - **🔑 Consistent Release Keystore & Signature**: Permanent keystore integration guarantees all updates install smoothly over existing installations.
-            - **🎨 Brand New App Icon & Logo**: High-resolution icons and splash branding across all Android densities.
-            - **🧹 Minimalist Top Bar**: Cleaned up the app header to showcase scan counts and status.
-            - **🎬 Video Player & Clean Photo View**: Hardware-accelerated video playback and 1-click unobstructed viewing.
-            - **🌗 Dark / Light Mode & In-App Updates**: Full theme switcher and automatic update alerts.
+            ### 🚀 What's New in v1.1.6:
+            - **🧠 Advanced Filter & Color Invariant Detection (DCT pHash)**: Integrated 64-bit Discrete Cosine Transform frequency-domain perceptual hashing. Photos with heavy filters, black & white conversion, sepia tints, contrast adjustments, saturation boosts, and exposure edits are now accurately recognized as similar.
+            - **📐 Multi-Crop & Zoom Detection (Aspect-Ratio & Inset Crops)**: Extracted multi-region perceptual hashes (Center-Square 1:1 and Center-Inset 75% zoom). Photos cropped to different aspect ratios (e.g., 16:9 to 1:1, 4:3 to 1:1) or zoomed in on the subject are now detected as similar media.
+            - **⚡ Fast & Memory Efficient**: Sub-millisecond mathematical DCT transform with zero memory overhead or background lag.
 
             ### 📦 Download Assets:
             - `DupeCleaner-release.apk`: **Direct permanent download link** (always fetches the latest release APK).
